@@ -1,0 +1,24 @@
+services:
+    service:
+        build: service
+        restart: always
+        expose:
+            - 1337
+        networks:
+            - net
+        environment:
+            # One shared container backs several linked tasks. Each task's dynamic
+            # flag is injected as FLAG1, FLAG2, FLAG3 ... FLAGN (FLAG == FLAG1).
+            - FLAG1=${FLAG1}
+            - FLAG2=${FLAG2}
+            - FLAG3=${FLAG3}
+        labels:
+            - owl.proxy=true
+            - owl.proxy.port=1337
+            - owl.label.conntype=http
+            - owl.label.comment=One service, three flags (FLAG1/FLAG2/FLAG3).
+
+networks:
+    net:
+        external:
+            name: ctfd_frp_containers

@@ -35,6 +35,30 @@ class SharedDynamicCheckChallenge(DynamicCheckChallenge):
         self.instance_mode = "shared"
 
 
+class MultiDynamicCheckChallenge(DynamicCheckChallenge):
+    """A dynamic docker challenge whose single container backs several linked tasks.
+
+    One "group" is anchored by a parent challenge (``parent_id is None``) that owns
+    the deployment settings (``dirname``, compose, timing). Each task in the group
+    (parent included) consumes its own dynamic flag, addressed by ``flag_index``:
+    the container is launched once with ``FLAG1..FLAGN`` env vars and every task
+    accepts the flag matching its ``flag_index``.
+
+    Uses single-table inheritance on the ``dynamic_check_challenge`` table, so the
+    extra columns are added best-effort by ``DBUtils.ensure_schema`` for existing
+    installs.
+    """
+
+    __mapper_args__ = {"polymorphic_identity": "dynamic_check_docker_multi"}
+
+    # NULL for the group anchor (parent); the parent's challenge id for child tasks.
+    parent_id = db.Column(db.Integer, nullable=True)
+    # 1-based index of the flag this task consumes (FLAG<flag_index>).
+    flag_index = db.Column(db.Integer, default=1)
+    # Number of tasks in the group. Only meaningful on the parent; used at create time.
+    flag_count = db.Column(db.Integer, default=1)
+
+
 class OwlConfigs(db.Model):
     key = db.Column(db.String(length=128), primary_key=True)
     value = db.Column(db.Text)

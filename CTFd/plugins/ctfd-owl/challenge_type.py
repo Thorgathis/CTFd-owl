@@ -22,10 +22,17 @@ from CTFd.utils.modes import get_model
 from CTFd.utils.uploads import delete_file
 from CTFd.utils.user import get_ip
 from .utils.db_utils import DBUtils
-from .models import DynamicCheckChallenge, OwlContainers, OwlSharedSessions, SharedDynamicCheckChallenge
+from .models import (
+    DynamicCheckChallenge,
+    MultiDynamicCheckChallenge,
+    OwlContainers,
+    OwlSharedSessions,
+    SharedDynamicCheckChallenge,
+)
 
 
 SHARED_CHALLENGE_TYPE_ID = "dynamic_check_docker_shared"
+MULTI_CHALLENGE_TYPE_ID = "dynamic_check_docker_multi"
 
 
 class BaseDynamicCheckValueChallenge(BaseChallenge):
@@ -242,3 +249,146 @@ class SharedDynamicCheckValueChallenge(BaseDynamicCheckValueChallenge):
     name = SHARED_CHALLENGE_TYPE_ID
     challenge_model = SharedDynamicCheckChallenge
     instance_mode = "shared"
+
+
+class MultiDynamicCheckValueChallenge(BaseDynamicCheckValueChallenge):
+    """A group of linked dynamic tasks backed by a single container.
+
+    The parent (group anchor) owns the deployment; creating it auto-creates the
+    remaining child tasks. Each task consumes its own dynamic flag by ``flag_index``.
+    """
+
+    id = MULTI_CHALLENGE_TYPE_ID
+    name = MULTI_CHALLENGE_TYPE_ID
+    challenge_model = MultiDynamicCheckChallenge
+    instance_mode = "personal"
+
+    @classmethod
+    def create(cls, request):
+        data = request.form or request.get_json()
+
+        def _to_int(value, default):
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return default
+
+        # Only the parent carries flag_count / auto-creates children.
+        flag_count = max(1, _to_int(data.get("flag_count"), 1))
+
+        # Build the parent from the submitted fields (drop our control-only keys).
+        parent_kwargs = {k: v for k, v in data.items() if k not in ("flag_count",)}
+        parent = cls.challenge_model(**parent_kwargs)
+        parent.parent_id = None
+        parent.flag_index = 1
+        parent.flag_count = flag_count
+        # Name tasks as "Name [n/z]" (only when the group has more than one task).
+        base_name = parent.name
+        if flag_count > 1:
+            parent.name = f"{base_name} [1/{flag_count}]"
+        db.session.add(parent)
+        db.session.commit()
+
+        # Auto-create child tasks 2..N sharing the parent's settings/deployment group.
+        for idx in range(2, flag_count + 1):
+            child = cls.challenge_model(
+                name=f"{base_name} [{idx}/{flag_count}]",
+                description=parent.description,
+                value=parent.value,
+                category=parent.category,
+                # Inherit the parent's visibility state (e.g. visible/hidden).
+                state=parent.state,
+                type=MULTI_CHALLENGE_TYPE_ID,
+            )
+            child.initial = parent.initial
+            child.minimum = parent.minimum
+            child.decay = parent.decay
+            child.flag_type = parent.flag_type
+            # Children have no compose of their own; they ride the parent's container.
+            child.dirname = None
+            child.deployment = parent.deployment
+            child.instance_mode = "personal"
+            child.parent_id = parent.id
+            child.flag_index = idx
+            child.flag_count = 1
+            db.session.add(child)
+        db.session.commit()
+
+        return parent
+
+    @classmethod
+    def update(cls, challenge, request):
+        data = request.form or request.get_json()
+        data = dict(data)
+
+        # Normalize multitask control fields (empty string -> None, cast ints).
+        if "parent_id" in data:
+            raw = str(data.get("parent_id") or "").strip()
+            data["parent_id"] = int(raw) if raw else None
+        for key in ("flag_index", "flag_count"):
+            if key in data and str(data.get(key) or "").strip() != "":
+                try:
+                    data[key] = int(data[key])
+                except (TypeError, ValueError):
+                    data.pop(key)
+
+        for attr, value in data.items():
+            if attr in ("initial", "minimum", "decay"):
+                value = float(value)
+            setattr(challenge, attr, value)
+
+        challenge.instance_mode = cls.instance_mode
+
+        model = get_model()
+        solve_count = (
+            Solves.query.join(model, Solves.account_id == model.id)
+            .filter(
+                Solves.challenge_id == challenge.id,
+                model.hidden is False,
+                model.banned is False,
+            )
+            .count()
+        )
+        value = (
+            ((challenge.minimum - challenge.initial) / (challenge.decay ** 2))
+            * (solve_count ** 2)
+        ) + challenge.initial
+        value = math.ceil(value)
+        if value < challenge.minimum:
+            value = challenge.minimum
+        challenge.value = value
+
+        db.session.commit()
+
+        # When the parent's visibility changes, mirror it onto the child tasks.
+        if getattr(challenge, "parent_id", None) is None:
+            children = cls.challenge_model.query.filter_by(parent_id=challenge.id).all()
+            changed = False
+            for child in children:
+                if int(child.id) != int(challenge.id) and child.state != challenge.state:
+                    child.state = challenge.state
+                    changed = True
+            if changed:
+                db.session.commit()
+
+        return challenge
+
+    @classmethod
+    def read(cls, challenge):
+        challenge = cls.challenge_model.query.filter_by(id=challenge.id).first()
+        data = super().read(challenge)
+        data["parent_id"] = challenge.parent_id
+        data["flag_index"] = challenge.flag_index
+        data["flag_count"] = challenge.flag_count
+        return data
+
+    @classmethod
+    def delete(cls, challenge):
+        # Deleting the parent removes the whole group (children first).
+        chal = cls.challenge_model.query.filter_by(id=challenge.id).first()
+        if chal is not None and getattr(chal, "parent_id", None) is None:
+            children = cls.challenge_model.query.filter_by(parent_id=chal.id).all()
+            for child in children:
+                if int(child.id) != int(chal.id):
+                    super().delete(child)
+        super().delete(challenge)

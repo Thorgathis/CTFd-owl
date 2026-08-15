@@ -6,7 +6,14 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy import inspect
 from sqlalchemy.schema import CreateColumn, DDL
 
-from ..models import DynamicCheckChallenge, OwlConfigs, OwlContainers, OwlLaunchLocks, OwlSharedSessions
+from ..models import (
+    DynamicCheckChallenge,
+    MultiDynamicCheckChallenge,
+    OwlConfigs,
+    OwlContainers,
+    OwlLaunchLocks,
+    OwlSharedSessions,
+)
 
 
 class DBUtils:
@@ -73,6 +80,14 @@ class DBUtils:
                     .where(DynamicCheckChallenge.__table__.c.instance_mode.is_(None))
                     .values(instance_mode="personal")
                 )
+        except Exception:
+            pass
+
+        # Multitask columns live on the same (single-table inheritance) table.
+        try:
+            DBUtils._ensure_column(DynamicCheckChallenge.__table__, "parent_id")
+            DBUtils._ensure_column(DynamicCheckChallenge.__table__, "flag_index")
+            DBUtils._ensure_column(DynamicCheckChallenge.__table__, "flag_count")
         except Exception:
             pass
 
@@ -182,6 +197,54 @@ class DBUtils:
         db.session.close()
 
     @staticmethod
+    def remove_current_container_for_challenges(user_id, challenge_ids):
+        """Remove container rows for a given owner across several challenge ids (a multitask group)."""
+        if not challenge_ids:
+            return
+        q = db.session.query(OwlContainers)
+        q = q.filter(OwlContainers.user_id == user_id)
+        q = q.filter(OwlContainers.challenge_id.in_(list(challenge_ids)))
+        q.delete(synchronize_session=False)
+        db.session.commit()
+        db.session.close()
+
+    @staticmethod
+    def get_group_containers(user_id, challenge_ids):
+        """Get all container rows for a given owner across a multitask group's challenge ids."""
+        if not challenge_ids:
+            return None
+        q = db.session.query(OwlContainers)
+        q = q.filter(OwlContainers.user_id == user_id)
+        q = q.filter(OwlContainers.challenge_id.in_(list(challenge_ids)))
+        records = q.all()
+        if len(records) == 0:
+            return None
+        return records
+
+    @staticmethod
+    def renew_current_container_for_challenges(user_id, challenge_ids):
+        """Extend container lifetime across a multitask group and increment renew_count."""
+        if not challenge_ids:
+            return
+        q = db.session.query(OwlContainers)
+        q = q.filter(OwlContainers.user_id == user_id)
+        q = q.filter(OwlContainers.challenge_id.in_(list(challenge_ids)))
+        records = q.all()
+        if len(records) == 0:
+            return
+
+        configs = DBUtils.get_all_configs()
+        timeout = DBUtils.get_docker_timeout(configs)
+
+        for r in records:
+            r.start_time = r.start_time + datetime.timedelta(seconds=timeout)
+            if r.start_time > DBUtils.utcnow():
+                r.start_time = DBUtils.utcnow()
+            r.renew_count += 1
+        db.session.commit()
+        db.session.close()
+
+    @staticmethod
     def renew_current_container(user_id):
         """Extend container lifetime and increment renew_count."""
         q = db.session.query(OwlContainers)
@@ -229,12 +292,16 @@ class DBUtils:
 
     @staticmethod
     def get_alive_instance_count_for_user(user_id):
-        """Count alive instances for an owner, by distinct challenge_id."""
+        """Count alive instances for an owner, by distinct docker_id (one container = one instance).
+
+        Using docker_id (rather than challenge_id) makes a multitask group, whose per-task
+        rows share a single container, count as one instance.
+        """
         configs = DBUtils.get_all_configs()
         timeout = DBUtils.get_docker_timeout(configs)
         threshold = DBUtils.utcnow() - datetime.timedelta(seconds=timeout)
 
-        q = db.session.query(distinct(OwlContainers.challenge_id))
+        q = db.session.query(distinct(OwlContainers.docker_id))
         q = q.filter(OwlContainers.user_id == user_id)
         q = q.filter(OwlContainers.instance_mode != "shared")
         q = q.filter(OwlContainers.start_time >= threshold)
@@ -243,7 +310,7 @@ class DBUtils:
 
     @staticmethod
     def get_alive_instance_count_for_team(user_ids: list[int]):
-        """Count alive instances for a team, by distinct (user_id, challenge_id)."""
+        """Count alive instances for a team, by distinct (user_id, docker_id)."""
         if not user_ids:
             return 0
 
@@ -251,7 +318,7 @@ class DBUtils:
         timeout = DBUtils.get_docker_timeout(configs)
         threshold = DBUtils.utcnow() - datetime.timedelta(seconds=timeout)
 
-        q = db.session.query(OwlContainers.user_id, OwlContainers.challenge_id).distinct()
+        q = db.session.query(OwlContainers.user_id, OwlContainers.docker_id).distinct()
         q = q.filter(OwlContainers.user_id.in_(user_ids))
         q = q.filter(OwlContainers.instance_mode != "shared")
         q = q.filter(OwlContainers.start_time >= threshold)

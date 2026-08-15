@@ -1,0 +1,79 @@
+{% extends "admin/challenges/create.html" %}
+
+{% block header %}
+<div class="alert alert-secondary" role="alert">
+    Dynamic multitask challenges launch a single container that backs several linked tasks.
+    Each task gets its own dynamic flag, injected into the container as
+    <code>FLAG1</code>, <code>FLAG2</code>, ... <code>FLAGN</code>. Creating this parent task
+    auto-creates the remaining child tasks (hidden by default); you can add, remove or edit
+    them afterwards.
+</div>
+{% endblock %}
+
+{% block plugin_additions %}
+<div class="form-group">
+    <label for="dirname">Dirname<br>
+        <small class="form-text text-muted">
+            The name of your challenge dirname (holds the shared docker-compose)
+        </small>
+    </label>
+    <input type="text" class="form-control" name="dirname" placeholder="Enter challenge dirname">
+</div>
+<div class="form-group">
+    <label for="flag_count">Number of flags / tasks<br>
+        <small class="form-text text-muted">
+            How many linked tasks (and dynamic flags) this group has. The compose must expose
+            FLAG1..FLAG&lt;N&gt;. This parent is task #1; the rest are created automatically.
+        </small>
+    </label>
+    <input type="number" class="form-control" name="flag_count" value="3" min="1" placeholder="Enter number of flags">
+</div>
+<div class="form-group">
+    <label for="value" class="control-label">Flag Type</label>
+    <select class="form-control custom-select" name="flag_type">
+        <option value="dynamic">Dynamic</option>
+        <option value="semi-dynamic">Semi-Dynamic</option>
+        <option value="static">Static</option>
+    </select>
+    <small class="form-text text-muted">
+        For <b>static</b>, add a CTFd flag to <em>each</em> task in the group; that task's flag is
+        injected as its <code>FLAG&lt;index&gt;</code> and is what solves it.
+    </small>
+</div>
+{% endblock %}
+
+{% block value %}
+<div class="form-group">
+    <label for="value">Initial Value<br>
+        <small class="form-text text-muted">
+            This is how many points the challenge is worth initially.
+        </small>
+    </label>
+    <input type="number" class="form-control" name="value" placeholder="Enter value" required>
+
+</div>
+
+<div class="form-group">
+    <label for="value">Decay Limit<br>
+        <small class="form-text text-muted">
+            The amount of solves before the challenge reaches its minimum value (minimum 1)
+        </small>
+    </label>
+    <input type="number" class="form-control" name="decay" placeholder="Enter decay limit" required>
+</div>
+
+<div class="form-group">
+    <label for="value">Minimum Value<br>
+        <small class="form-text text-muted">
+            This is the lowest that the challenge can be worth
+        </small>
+    </label>
+    <input type="number" class="form-control" name="minimum" placeholder="Enter minimum value" required>
+</div>
+{% endblock %}
+
+{% block type %}
+<input type="hidden" value="dynamic_check_docker_multi" name="type" id="chaltype">
+<input type="hidden" value="single-docker-compose" name="deployment" id="deployment">
+<input type="hidden" value="personal" name="instance_mode" id="instance_mode">
+{% endblock %}

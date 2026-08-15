@@ -103,32 +103,57 @@ class DockerUtils:
         return socket
 
     @staticmethod
-    def up_docker_compose(user_id, challenge_id):
+    def resolve_flag(challenge, challenge_id):
+        """Resolve a single flag for a challenge based on its flag_type.
+
+        For dynamic challenges each call yields a fresh unique flag; for
+        semi-dynamic it renders the stored template; for static it returns the
+        stored CTFd flag content.
+        """
+        if challenge.flag_type == 'static':
+            return Flags.query.filter_by(challenge_id=challenge_id).first_or_404().content
+
+        # Dynamic / semi-dynamic mode.
+        # Semi-dynamic uses a flag template stored as a regular CTFd flag containing $[!gen!] placeholders.
+        flag_record = Flags.query.filter_by(challenge_id=challenge_id).first()
+        template = (flag_record.content if flag_record else "")
+
+        if challenge.flag_type == 'semi-dynamic':
+            if not template:
+                raise ValueError("Semi-dynamic flag mode requires a flag template")
+            if not DockerUtils.GEN_PLACEHOLDER.search(template):
+                raise ValueError("Semi-dynamic flag template must contain $[!gen!] or $[!gen:N!] placeholder")
+            return DockerUtils.gen_flag_from_template(template)
+
+        # Backward compatible: allow semi-dynamic placeholders even when flag_type is just 'dynamic'.
+        if template and DockerUtils.GEN_PLACEHOLDER.search(template):
+            return DockerUtils.gen_flag_from_template(template)
+        return DockerUtils.gen_flag()
+
+    @staticmethod
+    def up_docker_compose(user_id, challenge_id, flag_specs=None):
+        """Launch a challenge's docker-compose.
+
+        When ``flag_specs`` is provided (a multitask group) as a ``{index: challenge_id}``
+        mapping, one flag is resolved per index from that task's own challenge id and
+        exported as ``FLAG<index>``; the returned flag value is then a ``{index: flag}``
+        dict instead of a single string. Resolving per task id makes static (and
+        semi-dynamic) flags come from each task's own CTFd flag/template, while dynamic
+        flags stay per-instance random. ``FLAG`` is always exported (set to the
+        lowest-index flag) for backward compatibility.
+        """
         try:
             configs = DBUtils.get_all_configs()
             plugin_root = DockerUtils._get_plugin_root_dir()
             challenge: DynamicCheckChallenge = DynamicCheckChallenge.query.filter_by(id=challenge_id).first_or_404()
 
-            if challenge.flag_type == 'static':
-                flag = Flags.query.filter_by(challenge_id=challenge_id).first_or_404().content
+            if flag_specs is not None:
+                flag = {
+                    int(i): DockerUtils.resolve_flag(challenge, task_cid)
+                    for i, task_cid in flag_specs.items()
+                }
             else:
-                # Dynamic / semi-dynamic mode.
-                # Semi-dynamic uses a flag template stored as a regular CTFd flag containing $[!gen!] placeholders.
-                flag_record = Flags.query.filter_by(challenge_id=challenge_id).first()
-                template = (flag_record.content if flag_record else "")
-
-                if challenge.flag_type == 'semi-dynamic':
-                    if not template:
-                        raise ValueError("Semi-dynamic flag mode requires a flag template")
-                    if not DockerUtils.GEN_PLACEHOLDER.search(template):
-                        raise ValueError("Semi-dynamic flag template must contain $[!gen!] or $[!gen:N!] placeholder")
-                    flag = DockerUtils.gen_flag_from_template(template)
-                else:
-                    # Backward compatible: allow semi-dynamic placeholders even when flag_type is just 'dynamic'.
-                    if template and DockerUtils.GEN_PLACEHOLDER.search(template):
-                        flag = DockerUtils.gen_flag_from_template(template)
-                    else:
-                        flag = DockerUtils.gen_flag()
+                flag = DockerUtils.resolve_flag(challenge, challenge_id)
 
             socket = DockerUtils.get_socket()
             sname = os.path.join(plugin_root, "source", challenge.dirname)
@@ -182,8 +207,15 @@ class DockerUtils:
             process = subprocess.run(command, shell=True, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
             # up docker-compose
-            command = "export FLAG='{}' && cd ".format(
-                flag) + dname + " && sed -i \'s/CTFD_PRIVATE_NETWORK/" + name + "/\' run.yml " + "&& export DOCKER_HOST='{}' && docker compose -f run.yml up -d".format(
+            if isinstance(flag, dict):
+                # Multitask: export FLAG<index> for each flag, and FLAG=lowest index for compat.
+                primary = flag[min(flag.keys())]
+                exports = "export FLAG='{}'".format(primary)
+                for i in sorted(flag.keys()):
+                    exports += " && export FLAG{}='{}'".format(i, flag[i])
+            else:
+                exports = "export FLAG='{}'".format(flag)
+            command = exports + " && cd " + dname + " && sed -i \'s/CTFD_PRIVATE_NETWORK/" + name + "/\' run.yml " + "&& export DOCKER_HOST='{}' && docker compose -f run.yml up -d".format(
                 socket)
             process = subprocess.run(command, shell=True, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             log(

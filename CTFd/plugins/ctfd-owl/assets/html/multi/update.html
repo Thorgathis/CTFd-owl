@@ -1,0 +1,87 @@
+{% extends "admin/challenges/update.html" %}
+
+{% block plugin_additions %}
+<div class="form-group">
+    <label for="dirname">Dirname<br>
+        <small class="form-text text-muted">
+            The name of your challenge dirname. Child tasks leave this empty and ride the parent's container.
+        </small>
+    </label>
+    <input type="text" class="form-control chal-name" name="dirname" value="{{ challenge.dirname or '' }}">
+</div>
+<div class="form-group">
+    <label>Group role<br>
+        <small class="form-text text-muted">
+            {% if challenge.parent_id %}
+            Child task (flag index {{ challenge.flag_index }}) of parent challenge #{{ challenge.parent_id }}.
+            {% else %}
+            Parent / group anchor. Flag index {{ challenge.flag_index }} of {{ challenge.flag_count }} tasks.
+            {% endif %}
+        </small>
+    </label>
+</div>
+<div class="form-group">
+    <label for="flag_index">Flag index<br>
+        <small class="form-text text-muted">
+            1-based index of the flag this task consumes (FLAG&lt;index&gt; in the container).
+        </small>
+    </label>
+    <input type="number" class="form-control" name="flag_index" value="{{ challenge.flag_index }}" min="1">
+</div>
+<div class="form-group">
+    <label for="parent_id">Parent challenge id<br>
+        <small class="form-text text-muted">
+            The group anchor's challenge id. Leave empty for the parent itself.
+        </small>
+    </label>
+    <input type="number" class="form-control" name="parent_id" value="{{ challenge.parent_id or '' }}" min="1">
+</div>
+<div class="form-group">
+    <label for="value" class="control-label">Flag Type</label>
+    <select class="form-control custom-select" name="flag_type">
+        <option value="dynamic" {% if challenge.flag_type=="dynamic" %}selected{% endif %}>Dynamic</option>
+        <option value="semi-dynamic" {% if challenge.flag_type=="semi-dynamic" %}selected{% endif %}>Semi-Dynamic
+        </option>
+        <option value="static" {% if challenge.flag_type=="static" %}selected{% endif %}>Static</option>
+    </select>
+</div>
+<input type="hidden" name="instance_mode" value="personal">
+{% endblock %}
+
+{% block value %}
+<div class="form-group">
+    <label for="value">Current Value<br>
+        <small class="form-text text-muted">
+            This is how many points the challenge is worth right now.
+        </small>
+    </label>
+    <input type="number" class="form-control chal-value" name="value" value="{{ challenge.value }}" disabled>
+</div>
+
+<div class="form-group">
+    <label for="value">Initial Value<br>
+        <small class="form-text text-muted">
+            This is how many points the challenge was worth initially.
+        </small>
+    </label>
+    <input type="number" class="form-control chal-initial" name="initial" value="{{ challenge.initial }}" required>
+</div>
+
+<div class="form-group">
+    <label for="value">Decay Limit<br>
+        <small class="form-text text-muted">
+            The amount of solves before the challenge reaches its minimum value (minimum 1)
+        </small>
+    </label>
+    <input type="number" class="form-control chal-decay" name="decay" value="{{ challenge.decay }}" required>
+</div>
+
+<div class="form-group">
+    <label for="value">Minimum Value<br>
+        <small class="form-text text-muted">
+            This is the lowest that the challenge can be worth
+        </small>
+    </label>
+    <input type="number" class="form-control chal-minimum" name="minimum" value="{{ challenge.minimum }}" required>
+</div>
+{% endblock %}

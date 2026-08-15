@@ -15,7 +15,11 @@ from CTFd.models import Users
 from CTFd.plugins import register_plugin_assets_directory, register_plugin_script
 from CTFd.plugins.challenges import CHALLENGE_CLASSES
 from CTFd.utils.decorators import admins_only, authed_only
-from .challenge_type import DynamicCheckValueChallenge, SharedDynamicCheckValueChallenge
+from .challenge_type import (
+    DynamicCheckValueChallenge,
+    SharedDynamicCheckValueChallenge,
+    MultiDynamicCheckValueChallenge,
+)
 from .utils.control_utils import ControlUtil
 from .utils.db_utils import DBUtils
 from .extensions import get_mode
@@ -89,6 +93,17 @@ def load(app):
         "view": f"/plugins/{plugin_name}/assets/js/view.js",
     }
     CHALLENGE_CLASSES[SharedDynamicCheckValueChallenge.id] = SharedDynamicCheckValueChallenge
+    MultiDynamicCheckValueChallenge.templates = {
+        "create": f"/plugins/{plugin_name}/assets/html/multi/create.html",
+        "update": f"/plugins/{plugin_name}/assets/html/multi/update.html",
+        "view": f"/plugins/{plugin_name}/assets/html/personal/view.html",
+    }
+    MultiDynamicCheckValueChallenge.scripts = {
+        "create": f"/plugins/{plugin_name}/assets/js/create.js",
+        "update": f"/plugins/{plugin_name}/assets/js/update.js",
+        "view": f"/plugins/{plugin_name}/assets/js/view.js",
+    }
+    CHALLENGE_CLASSES[MultiDynamicCheckValueChallenge.id] = MultiDynamicCheckValueChallenge
 
     owl_blueprint = Blueprint(
         "ctfd-owl",
@@ -593,15 +608,18 @@ def load(app):
             members = Users.query.filter_by(team_id=viewer_team_id).all()
             user_ids = [m.id for m in members]
 
+        # Order by challenge_id so the group anchor (lowest id, created first) names the card.
         rows: list[OwlContainers] = OwlContainers.query.filter(
             OwlContainers.user_id.in_(user_ids),
             OwlContainers.instance_mode != "shared",
             OwlContainers.start_time >= threshold,
-        ).all()
+        ).order_by(OwlContainers.challenge_id.asc()).all()
 
         instances = {}
+        seen_ports = {}
         for r in rows:
-            key = (int(r.user_id), int(r.challenge_id), str(r.docker_id))
+            # Group by docker_id so a multitask group's per-task rows collapse to one card.
+            key = (int(r.user_id), str(r.docker_id))
             if key not in instances:
                 remaining = timeout - (datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None) - r.start_time).seconds
                 instances[key] = {
@@ -614,6 +632,11 @@ def load(app):
                     'instance_mode': 'personal',
                     'services': [],
                 }
+                seen_ports[key] = set()
+
+            if int(r.port) in seen_ports[key]:
+                continue
+            seen_ports[key].add(int(r.port))
 
             labels_obj = LabelsUtils.loads_labels(getattr(r, 'labels', '{}') or '{}')
             instances[key]['services'].append({
